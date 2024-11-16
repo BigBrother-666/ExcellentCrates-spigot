@@ -40,7 +40,13 @@ import su.nightexpress.nightcore.util.text.tag.Tags;
 import su.nightexpress.nightcore.util.wrapper.UniParticle;
 
 import java.io.File;
+import java.time.DayOfWeek;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.ZoneId;
+import java.time.temporal.TemporalAdjusters;
 import java.util.*;
+import java.util.logging.Level;
 
 public class CrateManager extends AbstractManager<CratesPlugin> {
 
@@ -606,6 +612,21 @@ public class CrateManager extends AbstractManager<CratesPlugin> {
     }
 
     public void setCrateCooldown(@NotNull Player player, @NotNull Crate crate) {
+        try {
+            if (crate.isUseRefresh()) {
+                if (player.hasPermission(Perms.BYPASS_CRATE_COOLDOWN)) return;
+                // 下次刷新时间
+                long nextRefreshTime = getNextRefreshTime(crate);
+
+                CrateUser user = plugin.getUserManager().getUserData(player);
+                user.setCrateCooldown(crate, nextRefreshTime);
+                return;
+            }
+        } catch (Exception e) {
+            plugin.getLogger().log(Level.SEVERE, e.getMessage());
+        }
+
+        // 原版冷却逻辑
         if (player.hasPermission(Perms.BYPASS_CRATE_COOLDOWN) || crate.getOpenCooldown() == 0) return;
 
         long cooldown = crate.getOpenCooldown();
@@ -613,6 +634,58 @@ public class CrateManager extends AbstractManager<CratesPlugin> {
 
         CrateUser user = plugin.getUserManager().getUserData(player);
         user.setCrateCooldown(crate, endDate);
+    }
+
+    public long getNextRefreshTime(Crate crate) {
+        String refreshType = crate.getRefreshType();
+        String refreshTime = crate.getRefreshTime();
+        LocalTime time = LocalTime.parse(refreshTime);
+
+        LocalDateTime now = LocalDateTime.now();
+
+        switch (refreshType.toLowerCase()) {
+            case "daily":
+                // 每日刷新
+                LocalDateTime dailyRefresh = now.toLocalDate().atTime(time);
+                if (now.isAfter(dailyRefresh)) {
+                    dailyRefresh = dailyRefresh.plusDays(1);
+                }
+                return dailyRefresh.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
+
+            case "weekly":
+                // 每周刷新
+                String refreshDay = crate.getRefreshDay().toUpperCase();
+                DayOfWeek dayOfWeek = DayOfWeek.valueOf(refreshDay);
+                LocalDateTime weeklyRefresh = now.with(TemporalAdjusters.nextOrSame(dayOfWeek)).toLocalDate().atTime(time);
+                if (now.isAfter(weeklyRefresh)) {
+                    weeklyRefresh = weeklyRefresh.plusWeeks(1);
+                }
+                return weeklyRefresh.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
+
+            case "monthly":
+                // 每月刷新
+                int dayOfMonth = Integer.parseInt(crate.getRefreshDay());
+                LocalDateTime monthlyRefresh = now.withDayOfMonth(Math.min(dayOfMonth, now.toLocalDate().lengthOfMonth()))
+                        .toLocalDate().atTime(time);
+                if (now.isAfter(monthlyRefresh)) {
+                    monthlyRefresh = monthlyRefresh.plusMonths(1);
+                }
+                return monthlyRefresh.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
+
+            case "yearly":
+                // 每年刷新
+                String[] yearlyDate = crate.getRefreshDay().split("-");
+                int month = Integer.parseInt(yearlyDate[0]);
+                int day = Integer.parseInt(yearlyDate[1]);
+                LocalDateTime yearlyRefresh = now.withMonth(month).withDayOfMonth(day).toLocalDate().atTime(time);
+                if (now.isAfter(yearlyRefresh)) {
+                    yearlyRefresh = yearlyRefresh.plusYears(1);
+                }
+                return yearlyRefresh.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
+
+            default:
+                throw new IllegalArgumentException("Unknown refresh type: " + refreshType);
+        }
     }
 
     public void playCrateEffects() {
