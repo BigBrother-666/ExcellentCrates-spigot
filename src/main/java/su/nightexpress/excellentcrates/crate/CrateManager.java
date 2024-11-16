@@ -1,7 +1,7 @@
 package su.nightexpress.excellentcrates.crate;
 
+import org.bukkit.Color;
 import org.bukkit.Location;
-import org.bukkit.Particle;
 import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.entity.Player;
@@ -10,67 +10,96 @@ import org.bukkit.inventory.ItemStack;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import su.nightexpress.excellentcrates.CratesPlugin;
+import su.nightexpress.excellentcrates.config.Keys;
 import su.nightexpress.excellentcrates.Placeholders;
 import su.nightexpress.excellentcrates.api.currency.Currency;
 import su.nightexpress.excellentcrates.api.event.CrateOpenEvent;
 import su.nightexpress.excellentcrates.api.opening.Opening;
 import su.nightexpress.excellentcrates.config.Config;
-import su.nightexpress.excellentcrates.config.Keys;
 import su.nightexpress.excellentcrates.config.Lang;
+import su.nightexpress.excellentcrates.config.Perms;
+import su.nightexpress.excellentcrates.crate.editor.*;
 import su.nightexpress.excellentcrates.crate.effect.AbstractEffect;
 import su.nightexpress.excellentcrates.crate.effect.EffectModel;
 import su.nightexpress.excellentcrates.crate.impl.*;
 import su.nightexpress.excellentcrates.crate.listener.CrateListener;
+import su.nightexpress.excellentcrates.crate.menu.CratesEditorMenu;
 import su.nightexpress.excellentcrates.crate.menu.MilestonesMenu;
 import su.nightexpress.excellentcrates.crate.menu.PreviewMenu;
-import su.nightexpress.excellentcrates.data.impl.CrateData;
 import su.nightexpress.excellentcrates.data.impl.CrateUser;
-import su.nightexpress.excellentcrates.data.impl.LimitData;
-import su.nightexpress.excellentcrates.editor.type.CreationResult;
+import su.nightexpress.excellentcrates.hologram.HologramType;
 import su.nightexpress.excellentcrates.key.CrateKey;
 import su.nightexpress.excellentcrates.opening.impl.BasicOpening;
-import su.nightexpress.excellentcrates.util.CrateUtils;
 import su.nightexpress.excellentcrates.util.InteractType;
-import su.nightexpress.excellentcrates.util.pos.WorldPos;
 import su.nightexpress.nightcore.config.FileConfig;
 import su.nightexpress.nightcore.manager.AbstractManager;
 import su.nightexpress.nightcore.menu.impl.ConfigMenu;
 import su.nightexpress.nightcore.util.*;
+import su.nightexpress.nightcore.util.random.Rnd;
 import su.nightexpress.nightcore.util.text.tag.Tags;
 import su.nightexpress.nightcore.util.wrapper.UniParticle;
 
 import java.io.File;
+import java.time.DayOfWeek;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.ZoneId;
+import java.time.temporal.TemporalAdjusters;
 import java.util.*;
+import java.util.logging.Level;
 
 public class CrateManager extends AbstractManager<CratesPlugin> {
 
     private final Map<String, Rarity>      rarityMap;
     private final Map<String, Crate>       crateMap;
     private final Map<String, PreviewMenu> previewMap;
-    private final Map<UUID, Long> previewCooldown;
 
+    private CratesEditorMenu editorMenu;
     private MilestonesMenu   milestonesMenu;
+
+    private CrateListEditor       cratesEditor;
+    private CrateMainEditor       crateSettingsEditor;
+    private CrateParticleEditor   crateParticleEditor;
+    private CrateMilestonesEditor milestonesEditor;
+    private CratePlacementEditor  placementEditor;
+    private RewardListEditor      rewardsEditor;
+    private RewardMainEditor      rewardSettingsEditor;
+    private RewardSortEditor      rewardSortEditor;
 
     public CrateManager(@NotNull CratesPlugin plugin) {
         super(plugin);
         this.rarityMap = new HashMap<>();
         this.crateMap = new HashMap<>();
         this.previewMap = new HashMap<>();
-        this.previewCooldown = new HashMap<>();
     }
 
     @Override
     public void onLoad() {
         this.loadRarities();
+        if (this.rarityMap.isEmpty()) {
+            this.plugin.error("No rarities are available! You must have at least 1 rarity for the plugin to work.");
+            this.plugin.getPluginManager().disablePlugin(this.plugin);
+            return;
+        }
+
         this.loadPreviews();
         this.loadCrates();
-        this.loadUI();
-        this.plugin.runTaskAsync(task -> {
-            this.loadRewardLimits();
-            this.getCrates().forEach(crate -> crate.setLoaded(true));
-        });
 
-        if (this.plugin.hasHolograms()) {
+
+
+        this.editorMenu = new CratesEditorMenu(this.plugin);
+        this.cratesEditor = new CrateListEditor(this.plugin, this);
+        this.crateSettingsEditor = new CrateMainEditor(this.plugin);
+        this.crateParticleEditor = new CrateParticleEditor(this.plugin);
+        this.milestonesEditor = new CrateMilestonesEditor(this.plugin);
+        this.placementEditor = new CratePlacementEditor(this.plugin);
+        this.rewardsEditor = new RewardListEditor(this.plugin);
+        this.rewardSettingsEditor = new RewardMainEditor(this.plugin);
+        this.rewardSortEditor = new RewardSortEditor(this.plugin);
+
+        this.milestonesMenu = new MilestonesMenu(this.plugin);
+
+        if (this.plugin.getHologramHandler() != null && Config.CRATE_HOLOGRAM_HANDLER.get() == HologramType.INTERNAL) {
             this.addTask(plugin.createAsyncTask(this::updateCrateHolograms).setSecondsInterval(Config.CRATE_HOLOGRAM_UPDATE_INTERVAL.get()));
         }
 
@@ -83,7 +112,7 @@ public class CrateManager extends AbstractManager<CratesPlugin> {
     private void loadRarities() {
         FileConfig config = this.plugin.getConfig();
         
-        if (config.getSection("Rewards.Rarities").isEmpty()) {
+        if (!config.contains("Rewards.Rarities")) {
             Set<Rarity> rarities = new HashSet<>();
 
             File oldFile = new File(plugin.getDataFolder(), "rarity.yml");
@@ -111,18 +140,6 @@ public class CrateManager extends AbstractManager<CratesPlugin> {
             this.rarityMap.put(rarity.getId(), rarity);
         });
 
-
-        // Should never happen.
-        if (this.rarityMap.isEmpty()) {
-            Rarity dummy = Rarity.dummy(this.plugin);
-            this.rarityMap.put(dummy.getId(), dummy);
-
-            this.plugin.warn("No rarities defined in the config, adding dummy one...");
-            this.plugin.warn("YOU MUST FIX THIS ISSUE BY EDITING OR REGENERATING 'Rarities' SECTION IN THE CONFIG!");
-            return;
-        }
-
-
         this.plugin.info("Loaded " + this.rarityMap.size() + " rarities!");
     }
 
@@ -134,18 +151,16 @@ public class CrateManager extends AbstractManager<CratesPlugin> {
         }
     }
 
-    private void loadUI() {
-        if (Config.isMilestonesEnabled()) {
-            this.milestonesMenu = new MilestonesMenu(this.plugin);
-        }
-    }
-
     private void loadCrates() {
         for (File file : FileUtil.getFiles(plugin.getDataFolder() + Config.DIR_CRATES, false)) {
             Crate crate = new Crate(plugin, file);
             this.loadCrate(crate);
         }
         this.plugin.info("Loaded " + this.crateMap.size() + " crates.");
+
+        // Load locations when all worlds loaded.
+        this.plugin.runTask(task -> this.getCrates().forEach(Crate::loadLocations));
+        this.plugin.runTaskAsync(task -> this.getCrates().forEach(Crate::loadRewardWinDatas));
     }
 
     private void loadCrate(@NotNull Crate crate) {
@@ -155,62 +170,20 @@ public class CrateManager extends AbstractManager<CratesPlugin> {
         else this.plugin.error("Crate not loaded: '" + crate.getFile().getName() + "'.");
     }
 
-    public void loadRewardLimits() {
-        var map = this.plugin.getData().getRewardLimits();
-
-        boolean purge = Config.DATABASE_PURGE_REWARDS_DATA.get();
-        map.entrySet().removeIf(entry -> {
-            String crateId = entry.getKey();
-            Crate crate = this.getCrateById(crateId);
-            if (crate == null) {
-                if (purge) this.plugin.getData().deleteRewardLimitData(crateId);
-                //this.plugin.debug("Deleted all limit data for invalid '" + crateId + "' crate.");
-                return true;
-            }
-
-            var limitMap = entry.getValue();
-            limitMap.keySet().removeIf(rewardId -> {
-                Reward reward = crate.getReward(rewardId);
-                if (reward != null) return false;
-
-                if (purge) this.plugin.getData().deleteRewardLimitData(crateId, rewardId);
-                //this.plugin.debug("Deleted limit data for invalid '" + rewardId + "' reward of '" + crateId + "' crate.");
-                return true;
-            });
-
-            return limitMap.isEmpty();
-        });
-        if (map.isEmpty()) return;
-
-        this.getCrates().forEach(crate -> {
-            var limitMap = map.get(crate.getId());
-            if (limitMap == null) return;
-
-            crate.getRewards().forEach(reward -> {
-                LimitData data = limitMap.get(reward.getId());
-                if (data == null) {
-                    data = this.createRewardLimit(reward);
-                }
-                reward.loadGlobalLimit(data);
-                //if (data != null) this.plugin.debug("Loaded limit data for '" + reward.getId() + "' reward of '" + crate.getId() + "' crate.");
-            });
-        });
-    }
-
-    @Nullable
-    public LimitData createRewardLimit(@NotNull Reward reward) {
-        if (!reward.getGlobalLimits().isEnabled()) return null;
-
-        LimitData data = LimitData.create();
-        this.plugin.getData().insertRewardLimitData(reward, data);
-        //this.plugin.debug("Created fresh limit data for '" + reward.getId() + "' reward of '" + reward.getCrate().getId() + "' crate.");
-        return data;
-    }
-
     @Override
     protected void onShutdown() {
         BasicOpening.clearVisuals(this.plugin);
         Arrays.asList(EffectModel.values()).forEach(model -> model.getEffect().reset());
+
+        if (this.editorMenu != null) this.editorMenu.clear();
+        if (this.cratesEditor != null) this.cratesEditor.clear();
+        if (this.crateSettingsEditor != null) this.crateSettingsEditor.clear();
+        if (this.crateParticleEditor != null) this.crateParticleEditor.clear();
+        if (this.milestonesEditor != null) this.milestonesEditor.clear();
+        if (this.placementEditor != null) this.placementEditor.clear();
+        if (this.rewardsEditor != null) this.rewardsEditor.clear();
+        if (this.rewardSettingsEditor != null) this.rewardSettingsEditor.clear();
+        if (this.rewardSortEditor != null) this.rewardSortEditor.clear();
 
         if (this.milestonesMenu != null) this.milestonesMenu.clear();
 
@@ -224,6 +197,51 @@ public class CrateManager extends AbstractManager<CratesPlugin> {
         this.crateMap.clear();
 
         this.rarityMap.clear();
+    }
+
+    /*@NotNull
+    public CratesEditorMenu getEditorMenu() {
+        return editorMenu;
+    }
+
+    @NotNull
+    public CrateListEditor getCratesEditor() {
+        return cratesEditor;
+    }
+
+    @NotNull
+    public CrateMainEditor getCrateSettingsEditor() {
+        return crateSettingsEditor;
+    }
+
+    @NotNull
+    public CrateParticleEditor getCrateParticleEditor() {
+        return crateParticleEditor;
+    }
+
+    @NotNull
+    public CrateMilestonesEditor getMilestonesEditor() {
+        return milestonesEditor;
+    }
+
+    @NotNull
+    public CratePlacementEditor getPlacementEditor() {
+        return placementEditor;
+    }
+
+    @NotNull
+    public RewardListEditor getRewardsEditor() {
+        return rewardsEditor;
+    }
+
+    @NotNull
+    public RewardMainEditor getRewardSettingsEditor() {
+        return rewardSettingsEditor;
+    }*/
+
+    @NotNull
+    public MilestonesMenu getMilestonesMenu() {
+        return milestonesMenu;
     }
 
     @NotNull
@@ -272,11 +290,43 @@ public class CrateManager extends AbstractManager<CratesPlugin> {
         return new ArrayList<>(this.previewMap.keySet());
     }
 
-    public void openMilestones(@NotNull Player player, @NotNull CrateSource source) {
-        if (this.milestonesMenu != null) {
-            this.milestonesMenu.open(player, source);
-        }
+
+    public void openEditor(@NotNull Player player) {
+        this.editorMenu.open(player, this.plugin);
     }
+
+    public void openCratesEditor(@NotNull Player player) {
+        this.cratesEditor.open(player, this);
+    }
+
+    public void openCrateEditor(@NotNull Player player, @NotNull Crate crate) {
+        this.crateSettingsEditor.open(player, crate);
+    }
+
+    public void openCrateParticleEditor(@NotNull Player player, @NotNull Crate crate) {
+        this.crateParticleEditor.open(player, crate);
+    }
+
+    public void openMilestonesEditor(@NotNull Player player, @NotNull Crate crate) {
+        this.milestonesEditor.open(player, crate);
+    }
+
+    public void openPlacementEditor(@NotNull Player player, @NotNull Crate crate) {
+        this.placementEditor.open(player, crate);
+    }
+
+    public void openRewardsEditor(@NotNull Player player, @NotNull Crate crate) {
+        this.rewardsEditor.open(player, crate);
+    }
+
+    public void openRewardSortEditor(@NotNull Player player, @NotNull Crate crate) {
+        this.rewardSortEditor.open(player, crate);
+    }
+
+    public void openRewardEditor(@NotNull Player player, @NotNull Reward reward) {
+        this.rewardSettingsEditor.open(player, reward);
+    }
+
 
     public boolean isCrate(@NotNull ItemStack item) {
         return this.getCrateByItem(item) != null;
@@ -315,20 +365,18 @@ public class CrateManager extends AbstractManager<CratesPlugin> {
 
     @Nullable
     public Crate getCrateByLocation(@NotNull Location location) {
-        WorldPos pos = WorldPos.from(location);
-
-        return this.getCrates().stream().filter(crate -> crate.getBlockPositions().contains(pos)).findFirst().orElse(null);
+        return this.getCrates().stream().filter(crate -> crate.getBlockLocations().contains(location)).findFirst().orElse(null);
     }
 
     public void updateCrateHolograms() {
         this.getCrates().forEach(Crate::updateHologram);
     }
 
-    @NotNull
-    public CreationResult create(@NotNull String id) {
-        id = CrateUtils.validateId(id);
-        if (id.isBlank()) return CreationResult.ERROR_NAME;
-        if (this.getCrateById(id) != null) return CreationResult.ERROR_DUPLICATE;
+    public boolean create(@NotNull String id) {
+        id = StringUtil.lowerCaseUnderscore(id);
+        if (this.getCrateById(id) != null) {
+            return false;
+        }
 
         File file = new File(plugin.getDataFolder() + Config.DIR_CRATES, id + ".yml");
         FileUtil.create(file);
@@ -349,29 +397,17 @@ public class CrateManager extends AbstractManager<CratesPlugin> {
         crate.setHologramEnabled(true);
         crate.setHologramTemplate(Placeholders.DEFAULT);
         crate.setEffectModel(EffectModel.HELIX);
-        crate.setEffectParticle(UniParticle.of(Particle.CLOUD));
+        crate.setEffectParticle(UniParticle.redstone(Color.fromRGB(Rnd.get(256), Rnd.get(256), Rnd.get(256)), 1f));
         crate.save();
 
         this.loadCrate(crate);
-        return CreationResult.SUCCESS;
-    }
-
-    @NotNull
-    public CreationResult createReward(@NotNull Crate crate, @NotNull String id) {
-        id = CrateUtils.validateId(id);
-        if (id.isBlank()) return CreationResult.ERROR_NAME;
-        if (crate.getReward(id) != null) return CreationResult.ERROR_DUPLICATE;
-
-        Reward reward = Reward.createEmpty(plugin, crate, id);
-        crate.addReward(reward);
-
-        return CreationResult.SUCCESS;
+        return true;
     }
 
     public boolean delete(@NotNull Crate crate) {
         if (crate.getFile().delete()) {
             crate.clear();
-            this.plugin.runTaskAsync(task -> plugin.getData().deleteRewardLimitData(crate));
+            crate.deleteRewardWinDatas();
             this.crateMap.remove(crate.getId());
             return true;
         }
@@ -403,7 +439,7 @@ public class CrateManager extends AbstractManager<CratesPlugin> {
     }
 
     public void interactCrate(@NotNull Player player, @NotNull Crate crate, @NotNull InteractType action, @Nullable ItemStack item, @Nullable Block block) {
-        //player.closeInventory();
+        player.closeInventory();
 
         CrateSource source = new CrateSource(crate, item, block);
 
@@ -413,7 +449,7 @@ public class CrateManager extends AbstractManager<CratesPlugin> {
         }
 
         if (action == InteractType.CRATE_OPEN || action == InteractType.CRATE_MASS_OPEN) {
-            OpenSettings settings = new OpenSettings().setSkipAnimation(action == InteractType.CRATE_MASS_OPEN);
+            OpenSettings settings = new OpenSettings().setSkipAnimation(action == InteractType.CRATE_MASS_OPEN).setSaveData(false);
 
             int keys = plugin.getKeyManager().getKeysAmount(player, crate);
             int openings = action == InteractType.CRATE_MASS_OPEN && crate.isKeyRequired() ? Math.max(1, keys) : 1;
@@ -423,9 +459,17 @@ public class CrateManager extends AbstractManager<CratesPlugin> {
             }
 
             for (int spent = 0; spent < openings; spent++) {
+                // Save user & reward data for the latest iteration only.
+                if (openings == 1 || spent == (openings - 1)) {
+                    settings.setSaveData(true);
+                }
+
                 if (!this.openCrate(player, source, settings)) {
-                    if (spent == 0 && block != null && crate.isPushbackEnabled()) {
-                        player.setVelocity(player.getEyeLocation().getDirection().setY(Config.CRATE_PUSHBACK_Y.get()).multiply(Config.CRATE_PUSHBACK_MULTIPLY.get()));
+                    if (spent == 0) {
+                        if (block != null && crate.isPushbackEnabled()) {
+                            player.setVelocity(player.getEyeLocation().getDirection().setY(Config.CRATE_PUSHBACK_Y.get()).multiply(Config.CRATE_PUSHBACK_MULTIPLY.get()));
+                        }
+                        return;
                     }
                     break;
                 }
@@ -434,15 +478,12 @@ public class CrateManager extends AbstractManager<CratesPlugin> {
     }
 
     public boolean openCrate(@NotNull Player player, @NotNull CrateSource source, @NotNull OpenSettings settings) {
-        Opening openingData = this.plugin.getOpeningManager().getOpening(player);
+        Opening openingData = this.plugin.getOpeningManager().getOpeningData(player);
         if (openingData != null && !openingData.isCompleted()) {
             return false;
         }
 
         Crate crate = source.getCrate();
-        if (!crate.isLoaded()) {
-            return false;
-        }
 
         // Stop mass open (mostly only this case) if crate itemstack is out.
         if (source.getItem() != null && source.getItem().getAmount() <= 0) {
@@ -460,11 +501,10 @@ public class CrateManager extends AbstractManager<CratesPlugin> {
         }
 
         CrateUser user = plugin.getUserManager().getUserData(player);
-        CrateData crateData = user.getCrateData(crate);
-
-        if (!settings.isForce() && crate.hasOpenCooldown() && crateData.hasCooldown()) {
-            (crateData.isCooldownPermanent() ? Lang.CRATE_OPEN_ERROR_COOLDOWN_ONE_TIMED : Lang.CRATE_OPEN_ERROR_COOLDOWN_TEMPORARY).getMessage()
-                .replace(Placeholders.GENERIC_TIME, TimeUtil.formatDuration(crateData.getOpenCooldown()))
+        if (!settings.isForce() && user.isCrateOnCooldown(crate)) {
+            long expireDate = user.getCrateCooldown(crate);
+            (expireDate < 0 ? Lang.CRATE_OPEN_ERROR_COOLDOWN_ONE_TIMED : Lang.CRATE_OPEN_ERROR_COOLDOWN_TEMPORARY).getMessage()
+                .replace(Placeholders.GENERIC_TIME, TimeUtil.formatDuration(expireDate))
                 .replace(crate.replacePlaceholders())
                 .send(player);
             return false;
@@ -510,8 +550,10 @@ public class CrateManager extends AbstractManager<CratesPlugin> {
 
         Opening opening = this.plugin.getOpeningManager().createOpening(player, source, key);
         opening.setRefundable(!settings.isForce());
+        opening.setSaveData(settings.isSaveData());
 
         if (!this.plugin.getOpeningManager().startOpening(player, opening, settings.isSkipAnimation())) {
+            //this.plugin.getOpeningManager().stopOpening(player);
             return false;
         }
 
@@ -521,7 +563,7 @@ public class CrateManager extends AbstractManager<CratesPlugin> {
 
             // Take key
             if (crate.isKeyRequired()) {
-                this.plugin.getKeyManager().takeKey(player, crate);
+                /*key = */this.plugin.getKeyManager().takeKey(player, crate);
             }
 
             // Take crate item stack
@@ -534,27 +576,116 @@ public class CrateManager extends AbstractManager<CratesPlugin> {
         return true;
     }
 
-    public void setPreviewCooldown(@NotNull Player player) {
-        long timestamp = System.currentTimeMillis() + Config.CRATE_PREVIEW_COOLDOWN.get();
-        this.previewCooldown.put(player.getUniqueId(), timestamp);
+    public void addOpenings(@NotNull Player player, @NotNull Crate crate, int amount) {
+        if (amount == 0) return;
+
+        CrateUser user = plugin.getUserManager().getUserData(player);
+        int has = user.getOpeningsAmount(crate) ;
+        user.setOpeningsAmount(crate, has + amount);
     }
 
-    public long getPreviewCooldown(@NotNull Player player) {
-        long timestamp = this.previewCooldown.getOrDefault(player.getUniqueId(), 0L);
-        if (System.currentTimeMillis() < timestamp) {
-            return timestamp;
+    public void proceedMilestones(@NotNull Player player, @NotNull Crate crate) {
+        if (crate.getMilestones().isEmpty()) return;
+
+        CrateUser user = plugin.getUserManager().getUserData(player);
+
+        int milestonesMax = crate.getMaxMilestone();
+        int milestones = user.getMilestones(crate) + 1;
+
+        if (crate.isMilestonesRepeatable() || milestones <= milestonesMax) {
+            Milestone milestone = crate.getMilestone(milestones);
+            Reward reward = milestone == null ? null : milestone.getReward();
+            if (reward != null) {
+                reward.giveContent(player);
+                Lang.CRATE_OPEN_MILESTONE_COMPLETED.getMessage()
+                    .replace(crate.replacePlaceholders())
+                    .replace(Placeholders.MILESTONE_OPENINGS, NumberUtil.format(milestones))
+                    .replace(reward.replacePlaceholders())
+                    .send(player);
+            }
+
+            if (milestones >= milestonesMax && crate.isMilestonesRepeatable()) {
+                milestones = 0;
+            }
+            user.setMilestones(crate, milestones);
+        }
+    }
+
+    public void setCrateCooldown(@NotNull Player player, @NotNull Crate crate) {
+        try {
+            if (crate.isUseRefresh()) {
+                if (player.hasPermission(Perms.BYPASS_CRATE_COOLDOWN)) return;
+                // 下次刷新时间
+                long nextRefreshTime = getNextRefreshTime(crate);
+
+                CrateUser user = plugin.getUserManager().getUserData(player);
+                user.setCrateCooldown(crate, nextRefreshTime);
+                return;
+            }
+        } catch (Exception e) {
+            plugin.getLogger().log(Level.SEVERE, e.getMessage());
         }
 
-        this.removePreviewCooldown(player);
-        return 0L;
+        // 原版冷却逻辑
+        if (player.hasPermission(Perms.BYPASS_CRATE_COOLDOWN) || crate.getOpenCooldown() == 0) return;
+
+        long cooldown = crate.getOpenCooldown();
+        long endDate = cooldown < 0 ? -1L : System.currentTimeMillis() + cooldown * 1000L;
+
+        CrateUser user = plugin.getUserManager().getUserData(player);
+        user.setCrateCooldown(crate, endDate);
     }
 
-    public boolean hasPreviewCooldown(@NotNull Player player) {
-        return this.getPreviewCooldown(player) > 0L;
-    }
+    public long getNextRefreshTime(Crate crate) {
+        String refreshType = crate.getRefreshType();
+        String refreshTime = crate.getRefreshTime();
+        LocalTime time = LocalTime.parse(refreshTime);
 
-    public void removePreviewCooldown(@NotNull Player player) {
-        this.previewCooldown.remove(player.getUniqueId());
+        LocalDateTime now = LocalDateTime.now();
+
+        switch (refreshType.toLowerCase()) {
+            case "daily":
+                // 每日刷新
+                LocalDateTime dailyRefresh = now.toLocalDate().atTime(time);
+                if (now.isAfter(dailyRefresh)) {
+                    dailyRefresh = dailyRefresh.plusDays(1);
+                }
+                return dailyRefresh.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
+
+            case "weekly":
+                // 每周刷新
+                String refreshDay = crate.getRefreshDay().toUpperCase();
+                DayOfWeek dayOfWeek = DayOfWeek.valueOf(refreshDay);
+                LocalDateTime weeklyRefresh = now.with(TemporalAdjusters.nextOrSame(dayOfWeek)).toLocalDate().atTime(time);
+                if (now.isAfter(weeklyRefresh)) {
+                    weeklyRefresh = weeklyRefresh.plusWeeks(1);
+                }
+                return weeklyRefresh.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
+
+            case "monthly":
+                // 每月刷新
+                int dayOfMonth = Integer.parseInt(crate.getRefreshDay());
+                LocalDateTime monthlyRefresh = now.withDayOfMonth(Math.min(dayOfMonth, now.toLocalDate().lengthOfMonth()))
+                        .toLocalDate().atTime(time);
+                if (now.isAfter(monthlyRefresh)) {
+                    monthlyRefresh = monthlyRefresh.plusMonths(1);
+                }
+                return monthlyRefresh.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
+
+            case "yearly":
+                // 每年刷新
+                String[] yearlyDate = crate.getRefreshDay().split("-");
+                int month = Integer.parseInt(yearlyDate[0]);
+                int day = Integer.parseInt(yearlyDate[1]);
+                LocalDateTime yearlyRefresh = now.withMonth(month).withDayOfMonth(day).toLocalDate().atTime(time);
+                if (now.isAfter(yearlyRefresh)) {
+                    yearlyRefresh = yearlyRefresh.plusYears(1);
+                }
+                return yearlyRefresh.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
+
+            default:
+                throw new IllegalArgumentException("Unknown refresh type: " + refreshType);
+        }
     }
 
     public void playCrateEffects() {
@@ -564,15 +695,14 @@ public class CrateManager extends AbstractManager<CratesPlugin> {
             UniParticle particle = crate.getEffectParticle();
             AbstractEffect effect = crate.getEffectModel().getEffect();
 
-            crate.getBlockPositions().forEach(worldPos -> {
-                if (!worldPos.isChunkLoaded()) return;
+            new HashSet<>(crate.getBlockLocations()).forEach(location -> {
+                World world = location.getWorld();
+                int chunkX = location.getBlockX() >> 4;
+                int chunkZ = location.getBlockZ() >> 4;
+                if (world == null || !world.isChunkLoaded(chunkX, chunkZ)) return;
 
-                Location location = worldPos.toLocation();
-                if (location == null) return;
-
-                CrateUtils.getPlayersForEffects(location).forEach(player -> {
-                    effect.step(LocationUtil.setCenter3D(location), particle, player);
-                });
+                Location center = LocationUtil.getCenter(location.clone());
+                effect.step(center, particle);
             });
         });
 
