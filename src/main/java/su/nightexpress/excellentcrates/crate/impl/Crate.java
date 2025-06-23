@@ -75,6 +75,12 @@ public class Crate extends AbstractFileData<CratesPlugin> {
     private String      effectType;
     private UniParticle effectParticle;
 
+    private String refreshType;
+    private String refreshDay;
+    private String refreshTime;
+    private boolean useRefresh;
+
+
     public Crate(@NotNull CratesPlugin plugin, @NotNull File file) {
         super(plugin, file);
         this.keyIds = new HashSet<>();
@@ -118,6 +124,16 @@ public class Crate extends AbstractFileData<CratesPlugin> {
             config.set("Animation.Enabled", oldId != null);
             config.set("Animation.Id", oldId == null ? Placeholders.DEFAULT : oldId);
             config.remove("Animation_Config");
+        }
+
+        // 获取固定冷却时间配置
+        if (config.contains("Opening.Refresh")) {
+            this.setRefreshType(config.getString("Opening.Refresh.RefreshType", null).replace(" ",""));
+            this.setRefreshDay(config.getString("Opening.Refresh.RefreshDay", null).replace(" ",""));
+            this.setRefreshTime(config.getString("Opening.Refresh.RefreshTime", null).replace(" ",""));
+            this.setUseRefresh(true);
+        } else {
+            this.setUseRefresh(false);
         }
 
         this.setName(config.getString("Name", this.getId()));
@@ -812,6 +828,38 @@ public class Crate extends AbstractFileData<CratesPlugin> {
 
     public int getMaxMilestone() {
         return this.milestones.stream().mapToInt(Milestone::getOpenings).max().orElse(0);
+    }
+
+    public String getRefreshType() {
+        return refreshType;
+    }
+
+    public void setRefreshType(String refreshType) {
+        this.refreshType = refreshType;
+    }
+
+    public String getRefreshDay() {
+        return refreshDay;
+    }
+
+    public void setRefreshDay(String refreshDay) {
+        this.refreshDay = refreshDay;
+    }
+
+    public String getRefreshTime() {
+        return refreshTime;
+    }
+
+    public void setRefreshTime(String refreshTime) {
+        this.refreshTime = refreshTime;
+    }
+
+    public boolean isUseRefresh() {
+        return useRefresh;
+    }
+
+    public void setUseRefresh(boolean useRefresh) {
+        this.useRefresh = useRefresh;
     }
 
     @Nullable

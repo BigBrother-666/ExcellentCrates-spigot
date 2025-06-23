@@ -5,6 +5,7 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import su.nightexpress.excellentcrates.CratesPlugin;
 import su.nightexpress.excellentcrates.api.opening.Opening;
+import su.nightexpress.excellentcrates.config.Perms;
 import su.nightexpress.excellentcrates.crate.impl.Crate;
 import su.nightexpress.excellentcrates.crate.impl.CrateSource;
 import su.nightexpress.excellentcrates.data.crate.GlobalCrateData;
@@ -12,6 +13,13 @@ import su.nightexpress.excellentcrates.data.crate.UserCrateData;
 import su.nightexpress.excellentcrates.user.CrateUser;
 import su.nightexpress.excellentcrates.key.CrateKey;
 import su.nightexpress.nightcore.util.Players;
+
+import java.time.DayOfWeek;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.ZoneId;
+import java.time.temporal.TemporalAdjusters;
+import java.util.logging.Level;
 
 public abstract class AbstractOpening implements Opening {
 
@@ -112,7 +120,20 @@ public abstract class AbstractOpening implements Opening {
             globalData.setSaveRequired(true);
 
             if (crate.hasOpenCooldown() && !crate.hasCooldownBypassPermission(player)) {
-                userData.setCooldown(crate.getOpenCooldown());
+                try {
+                    if (crate.isUseRefresh()) {
+                        if (player.hasPermission(Perms.BYPASS_CRATE_COOLDOWN)) return;
+                        // 下次刷新时间
+                        long nextRefreshTime = getNextRefreshTime(crate);
+
+                        userData.setOpenCooldown(nextRefreshTime);
+                    } else {
+                        // 原版逻辑
+                        userData.setCooldown(crate.getOpenCooldown());
+                    }
+                } catch (Exception e) {
+                    plugin.getLogger().log(Level.SEVERE, e.getMessage());
+                }
             }
 
             if (crate.hasMilestones()) {
@@ -127,6 +148,58 @@ public abstract class AbstractOpening implements Opening {
         }
 
         this.plugin.getOpeningManager().removeOpening(this.getPlayer());
+    }
+
+    public long getNextRefreshTime(Crate crate) {
+        String refreshType = crate.getRefreshType();
+        String refreshTime = crate.getRefreshTime();
+        LocalTime time = LocalTime.parse(refreshTime);
+
+        LocalDateTime now = LocalDateTime.now();
+
+        switch (refreshType.toLowerCase()) {
+            case "daily":
+                // 每日刷新
+                LocalDateTime dailyRefresh = now.toLocalDate().atTime(time);
+                if (now.isAfter(dailyRefresh)) {
+                    dailyRefresh = dailyRefresh.plusDays(1);
+                }
+                return dailyRefresh.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
+
+            case "weekly":
+                // 每周刷新
+                String refreshDay = crate.getRefreshDay().toUpperCase();
+                DayOfWeek dayOfWeek = DayOfWeek.valueOf(refreshDay);
+                LocalDateTime weeklyRefresh = now.with(TemporalAdjusters.nextOrSame(dayOfWeek)).toLocalDate().atTime(time);
+                if (now.isAfter(weeklyRefresh)) {
+                    weeklyRefresh = weeklyRefresh.plusWeeks(1);
+                }
+                return weeklyRefresh.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
+
+            case "monthly":
+                // 每月刷新
+                int dayOfMonth = Integer.parseInt(crate.getRefreshDay());
+                LocalDateTime monthlyRefresh = now.withDayOfMonth(Math.min(dayOfMonth, now.toLocalDate().lengthOfMonth()))
+                        .toLocalDate().atTime(time);
+                if (now.isAfter(monthlyRefresh)) {
+                    monthlyRefresh = monthlyRefresh.plusMonths(1);
+                }
+                return monthlyRefresh.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
+
+            case "yearly":
+                // 每年刷新
+                String[] yearlyDate = crate.getRefreshDay().split("-");
+                int month = Integer.parseInt(yearlyDate[0]);
+                int day = Integer.parseInt(yearlyDate[1]);
+                LocalDateTime yearlyRefresh = now.withMonth(month).withDayOfMonth(day).toLocalDate().atTime(time);
+                if (now.isAfter(yearlyRefresh)) {
+                    yearlyRefresh = yearlyRefresh.plusYears(1);
+                }
+                return yearlyRefresh.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
+
+            default:
+                throw new IllegalArgumentException("Unknown refresh type: " + refreshType);
+        }
     }
 
     @Override
