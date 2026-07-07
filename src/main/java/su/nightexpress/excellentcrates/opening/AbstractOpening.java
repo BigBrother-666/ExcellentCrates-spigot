@@ -4,22 +4,23 @@ import org.bukkit.entity.Player;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import su.nightexpress.excellentcrates.CratesPlugin;
+import su.nightexpress.excellentcrates.Placeholders;
+import su.nightexpress.excellentcrates.api.crate.Reward;
 import su.nightexpress.excellentcrates.api.opening.Opening;
-import su.nightexpress.excellentcrates.config.Perms;
+import su.nightexpress.excellentcrates.config.Lang;
+import su.nightexpress.excellentcrates.crate.cost.Cost;
 import su.nightexpress.excellentcrates.crate.impl.Crate;
 import su.nightexpress.excellentcrates.crate.impl.CrateSource;
 import su.nightexpress.excellentcrates.data.crate.GlobalCrateData;
 import su.nightexpress.excellentcrates.data.crate.UserCrateData;
 import su.nightexpress.excellentcrates.user.CrateUser;
-import su.nightexpress.excellentcrates.key.CrateKey;
 import su.nightexpress.nightcore.util.Players;
+import su.nightexpress.nightcore.util.placeholder.Replacer;
 
-import java.time.DayOfWeek;
-import java.time.LocalDateTime;
-import java.time.LocalTime;
-import java.time.ZoneId;
-import java.time.temporal.TemporalAdjusters;
-import java.util.logging.Level;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.List;
+import java.util.stream.Collectors;
 
 public abstract class AbstractOpening implements Opening {
 
@@ -27,24 +28,26 @@ public abstract class AbstractOpening implements Opening {
     protected final Player       player;
     protected final CrateSource  source;
     protected final Crate        crate;
-    protected final CrateKey     key;
+    protected final Cost         cost;
+    protected final List<Reward> rewards;
 
     protected long    tickCount;
     protected boolean running;
     protected boolean refundable;
 
-    public AbstractOpening(@NotNull CratesPlugin plugin, @NotNull Player player, @NotNull CrateSource source, @Nullable CrateKey key) {
+    public AbstractOpening(@NotNull CratesPlugin plugin, @NotNull Player player, @NotNull CrateSource source, @Nullable Cost cost) {
         this.plugin = plugin;
         this.player = player;
         this.source = source;
         this.crate = source.getCrate();
-        this.key = key;
+        this.cost = cost;
+        this.rewards = new ArrayList<>();
         this.setRefundable(true);
     }
 
     @Override
-    public void run() {
-        if (this.isRunning()) return;
+    public void start() {
+        if (this.running) return;
 
         this.running = true;
         this.onStart();
@@ -52,7 +55,7 @@ public abstract class AbstractOpening implements Opening {
 
     @Override
     public void stop() {
-        if (!this.isRunning()) return;
+        if (!this.running) return;
 
         this.running = false;
         this.onStop();
@@ -60,7 +63,7 @@ public abstract class AbstractOpening implements Opening {
 
     @Override
     public void tick() {
-        if (!this.isRunning()) return;
+        if (!this.running) return;
 
         if (this.isCompleted()) {
             this.stop();
@@ -69,14 +72,13 @@ public abstract class AbstractOpening implements Opening {
 
         if (this.isTickTime()) {
             this.onTick();
-            //this.tickCount = 0L;
         }
 
         this.tickCount = Math.max(0L, this.tickCount + 1L);
     }
 
     @Override
-    public boolean isRunning() {
+    public final boolean isRunning() {
         return this.running;
     }
 
@@ -98,15 +100,15 @@ public abstract class AbstractOpening implements Opening {
 
     protected void onStop() {
         if (this.isRefundable()) {
-            if (this.key != null) {
-                this.plugin.getKeyManager().giveKey(this.player, this.key, 1);
+            if (this.cost != null) {
+                this.cost.refundAll(this.player);
             }
             if (this.source.getItem() != null) {
-                Players.addItem(this.player, this.crate.getItem());
+                Players.addItem(this.player, this.crate.getItemStack());
             }
-
-            this.crate.refundForOpen(this.player);
         }
+
+        this.plugin.getOpeningManager().removeOpening(this.getPlayer());
 
         if (this.isCompleted()) {
             this.onComplete();
@@ -117,22 +119,15 @@ public abstract class AbstractOpening implements Opening {
 
             userData.addOpenings(1);
             globalData.setLatestOpener(this.player);
-            globalData.setSaveRequired(true);
+            globalData.setDirty(true);
 
-            if (crate.hasOpenCooldown() && !crate.hasCooldownBypassPermission(player)) {
-                try {
-                    if (crate.isUseRefresh()) {
-                        if (player.hasPermission(Perms.BYPASS_CRATE_COOLDOWN)) return;
-                        // 下次刷新时间
-                        long nextRefreshTime = getNextRefreshTime(crate);
+            this.rewards.forEach(reward -> reward.give(this.player));
 
-                        userData.setOpenCooldown(nextRefreshTime);
-                    } else {
-                        // 原版逻辑
-                        userData.setCooldown(crate.getOpenCooldown());
-                    }
-                } catch (Exception e) {
-                    plugin.getLogger().log(Level.SEVERE, e.getMessage());
+            if (crate.isOpeningCooldownEnabled()) {
+                userData.addOpeningStreak(1);
+
+                if (!userData.isOnCooldown() && !crate.hasCooldownBypassPermission(player)) {
+                    userData.setCooldown(crate.getOpeningCooldownTime());
                 }
             }
 
@@ -144,67 +139,40 @@ public abstract class AbstractOpening implements Opening {
                 }
             }
 
+            Lang.CRATE_OPEN_RESULT_INFO.message().send(this.player, replacer -> replacer
+                .replace(this.crate.replacePlaceholders())
+                .replace(Placeholders.GENERIC_REWARDS, this.rewards.stream()
+                    .map(reward -> reward.replacePlaceholders().apply(Lang.CRATE_OPEN_RESULT_REWARD.text()))
+                    .collect(Collectors.joining(", "))
+                )
+            );
+
+            List<String> postOpenCommands = Replacer.create().replace(this.crate.replacePlaceholders()).apply(this.crate.getPostOpenCommands());
+            Players.dispatchCommands(this.player, postOpenCommands);
+
             this.plugin.getUserManager().save(user);
-        }
-
-        this.plugin.getOpeningManager().removeOpening(this.getPlayer());
-    }
-
-    public long getNextRefreshTime(Crate crate) {
-        String refreshType = crate.getRefreshType();
-        String refreshTime = crate.getRefreshTime();
-        LocalTime time = LocalTime.parse(refreshTime);
-
-        LocalDateTime now = LocalDateTime.now();
-
-        switch (refreshType.toLowerCase()) {
-            case "daily":
-                // 每日刷新
-                LocalDateTime dailyRefresh = now.toLocalDate().atTime(time);
-                if (now.isAfter(dailyRefresh)) {
-                    dailyRefresh = dailyRefresh.plusDays(1);
-                }
-                return dailyRefresh.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
-
-            case "weekly":
-                // 每周刷新
-                String refreshDay = crate.getRefreshDay().toUpperCase();
-                DayOfWeek dayOfWeek = DayOfWeek.valueOf(refreshDay);
-                LocalDateTime weeklyRefresh = now.with(TemporalAdjusters.nextOrSame(dayOfWeek)).toLocalDate().atTime(time);
-                if (now.isAfter(weeklyRefresh)) {
-                    weeklyRefresh = weeklyRefresh.plusWeeks(1);
-                }
-                return weeklyRefresh.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
-
-            case "monthly":
-                // 每月刷新
-                int dayOfMonth = Integer.parseInt(crate.getRefreshDay());
-                LocalDateTime monthlyRefresh = now.withDayOfMonth(Math.min(dayOfMonth, now.toLocalDate().lengthOfMonth()))
-                        .toLocalDate().atTime(time);
-                if (now.isAfter(monthlyRefresh)) {
-                    monthlyRefresh = monthlyRefresh.plusMonths(1);
-                }
-                return monthlyRefresh.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
-
-            case "yearly":
-                // 每年刷新
-                String[] yearlyDate = crate.getRefreshDay().split("-");
-                int month = Integer.parseInt(yearlyDate[0]);
-                int day = Integer.parseInt(yearlyDate[1]);
-                LocalDateTime yearlyRefresh = now.withMonth(month).withDayOfMonth(day).toLocalDate().atTime(time);
-                if (now.isAfter(yearlyRefresh)) {
-                    yearlyRefresh = yearlyRefresh.plusYears(1);
-                }
-                return yearlyRefresh.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
-
-            default:
-                throw new IllegalArgumentException("Unknown refresh type: " + refreshType);
         }
     }
 
     @Override
+    @NotNull
+    public List<Reward> getRewards() {
+        return this.rewards;
+    }
+
+    @Override
+    public void addReward(@NotNull Reward reward) {
+        this.rewards.add(reward);
+    }
+
+    @Override
+    public void addRewards(@NotNull Collection<Reward> rewards) {
+        this.rewards.addAll(rewards);
+    }
+
+    @Override
     public boolean isRefundable() {
-        return refundable;
+        return this.refundable;
     }
 
     @Override
@@ -232,7 +200,7 @@ public abstract class AbstractOpening implements Opening {
 
     @Override
     @Nullable
-    public CrateKey getKey() {
-        return this.key;
+    public Cost getCost() {
+        return this.cost;
     }
 }
