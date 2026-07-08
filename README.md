@@ -65,3 +65,76 @@
 
 ## Donate
 If you like my work or enjoy using my plugins, feel free to [Buy me a coffee](https://ko-fi.com/nightexpress) :) Thank you! 🧡
+
+# 新增功能
+
+## 固定时间刷新（Fixed-Time Refresh）
+
+在原版“开箱冷却（OpeningCooldown）”的基础上，新增按固定时间点刷新的冷却模式。启用后，开箱冷却不再是固定冷却 N 秒，而是持续到下一个指定的刷新时间点。
+
+在 crate 配置文件（位于 `plugins/ExcellentCrates/crates/` 目录下）中新增 `RefreshCooldown` 配置节：
+
+```yaml
+# 必须先启用原版开箱冷却，固定时间刷新才会生效
+OpeningCooldown:
+  Enabled: true
+  Value: 86400   # 作为兜底值：当 RefreshCooldown 未启用或配置有误时，回退到该秒数冷却
+
+# 以下为新增配置
+RefreshCooldown:
+  # 是否启用固定时间刷新。为 true 时覆盖上面的 Value，改为按固定时间点刷新
+  Enabled: true
+  # 刷新类型，支持：DAILY / WEEKLY / MONTHLY / YEARLY（不区分大小写）
+  Type: 'YEARLY'
+  # 刷新日，含义随 Type 变化：
+  #   DAILY   —— 不需要填写，留空即可
+  #   WEEKLY  —— 星期几：MONDAY,TUESDAY,WEDNESDAY,THURSDAY,FRIDAY,SATURDAY,SUNDAY（不区分大小写）
+  #   MONTHLY —— 每月的第几天（1-31）。若当月天数不足，则取当月最后一天
+  #   YEARLY  —— 每年的日期，格式：月-日（例如 11-16）
+  Day: '11-16'
+  # 刷新时间，格式 时:分 或 时:分:秒，范围 00:00:00 ~ 23:59:59
+  Time: '12:00'
+```
+
+以下均为有效配置：
+
+```yaml
+RefreshCooldown:
+  # 每天 00:00 刷新
+  Enabled: true
+  Type: 'DAILY'
+  Time: '00:00'
+```
+
+```yaml
+RefreshCooldown:
+  # 每周六 01:00 刷新
+  Enabled: true
+  Type: 'WEEKLY'
+  Day: 'SATURDAY'
+  Time: '01:00'
+```
+
+```yaml
+RefreshCooldown:
+  # 每月 31 号 12:00 刷新；若当月最大天数 < 31，则取当月最后一天
+  Enabled: true
+  Type: 'MONTHLY'
+  Day: '31'
+  Time: '12:00'
+```
+
+```yaml
+RefreshCooldown:
+  # 每年 11 月 16 日 20:00 刷新
+  Enabled: true
+  Type: 'YEARLY'
+  Day: '11-16'
+  Time: '20:00'
+```
+
+说明：
+- 固定时间刷新依赖原版的 `OpeningCooldown`，请确保 `OpeningCooldown.Enabled: true`。
+- 拥有开箱冷却豁免权限（`excellentcrates.bypass.crate.opencooldown`）的玩家不受冷却限制。
+- 刷新时间基于服务器所在时区计算。
+- 每次新增或修改配置后，需执行 `/crate reload` 重载。

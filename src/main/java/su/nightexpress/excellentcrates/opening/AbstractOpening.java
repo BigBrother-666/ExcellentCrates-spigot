@@ -127,7 +127,18 @@ public abstract class AbstractOpening implements Opening {
                 userData.addOpeningStreak(1);
 
                 if (!userData.isOnCooldown() && !crate.hasCooldownBypassPermission(player)) {
-                    userData.setCooldown(crate.getOpeningCooldownTime());
+                    if (crate.isRefreshCooldownEnabled()) {
+                        long timestamp = crate.getRefreshSettings().generateCooldownTimestamp();
+                        if (timestamp > 0L) {
+                            userData.setCooldownTimestamp(timestamp);
+                        }
+                        else {
+                            userData.setCooldown(crate.getOpeningCooldownTime());
+                        }
+                    }
+                    else {
+                        userData.setCooldown(crate.getOpeningCooldownTime());
+                    }
                 }
             }
 

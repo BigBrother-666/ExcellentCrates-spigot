@@ -23,6 +23,7 @@ import su.nightexpress.excellentcrates.crate.cost.type.impl.EcoCostType;
 import su.nightexpress.excellentcrates.crate.cost.type.impl.KeyCostType;
 import su.nightexpress.excellentcrates.crate.effect.CrateEffect;
 import su.nightexpress.excellentcrates.crate.effect.EffectId;
+import su.nightexpress.excellentcrates.crate.refresh.RefreshSettings;
 import su.nightexpress.excellentcrates.crate.reward.RewardFactory;
 import su.nightexpress.excellentcrates.data.crate.GlobalCrateData;
 import su.nightexpress.excellentcrates.hologram.HologramManager;
@@ -82,6 +83,8 @@ public class Crate implements ConfigBacked {
     private int openingCooldownTime;
     private int openingLimitAmount;
 
+    private RefreshSettings refreshSettings;
+
     private boolean permissionRequired;
 
     private boolean milestonesRepeatable;
@@ -109,6 +112,7 @@ public class Crate implements ConfigBacked {
         this.blockPositions = new HashSet<>();
         this.milestones = new HashSet<>();
         this.description = new ArrayList<>();
+        this.refreshSettings = RefreshSettings.disabled();
     }
 
     public void load() throws IllegalStateException {
@@ -176,6 +180,8 @@ public class Crate implements ConfigBacked {
         this.setOpeningCooldownEnabled(config.getBoolean("OpeningCooldown.Enabled"));
         this.setOpeningCooldownTime(config.getInt("OpeningCooldown.Value"));
         this.setOpeningLimitAmount(config.getInt("OpeningLimits.Amount"));
+
+        this.setRefreshSettings(RefreshSettings.read(config, "RefreshCooldown"));
 
         this.setPermissionRequired(config.getBoolean("Permission_Required"));
 
@@ -285,6 +291,8 @@ public class Crate implements ConfigBacked {
         config.set("OpeningCooldown.Enabled", this.openingCooldownEnabled);
         config.set("OpeningCooldown.Value", this.openingCooldownTime);
         config.set("OpeningLimits.Amount", this.openingLimitAmount);
+
+        this.refreshSettings.write(config, "RefreshCooldown");
 
         config.remove("CostOptions");
         this.getCosts().forEach(cost -> config.set("CostOptions." + cost.getId(), cost));
@@ -688,6 +696,19 @@ public class Crate implements ConfigBacked {
 
     public void setOpeningLimitAmount(int openingLimitAmount) {
         this.openingLimitAmount = Math.max(1, openingLimitAmount);
+    }
+
+    @NotNull
+    public RefreshSettings getRefreshSettings() {
+        return this.refreshSettings;
+    }
+
+    public void setRefreshSettings(@NotNull RefreshSettings refreshSettings) {
+        this.refreshSettings = refreshSettings;
+    }
+
+    public boolean isRefreshCooldownEnabled() {
+        return this.refreshSettings.isEnabled();
     }
 
     @NotNull
